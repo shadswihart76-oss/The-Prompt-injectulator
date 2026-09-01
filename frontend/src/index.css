@@ -1,0 +1,3 @@
+/* minimal global reset — App.css carries all theming */
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; }
