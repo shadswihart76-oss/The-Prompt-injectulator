@@ -69,7 +69,7 @@ func decodeJSON(r *http.Request, dst any) error {
 		return err
 	}
 	// Reject trailing garbage after the JSON value.
-	if _, err := d.Token(); err != io.EOF {
+	if d.More() {
 		return errors.New("unexpected data after JSON value")
 	}
 	return nil

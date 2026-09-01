@@ -74,7 +74,7 @@ func LoadConfig() (*Config, error) {
 
 	// DEV_MODE settings must not bleed into production.
 	if !devMode && (os.Getenv("DEV_TEST_EMAIL") != "" || os.Getenv("DEV_TEST_PASSWORD") != "") {
-		return nil, errors.New("DEV_TEST_EMAIL and DEV_TEST_PASSWORD must not be set when DEV_MODE is false")
+		return nil, errors.New("DEV_TEST_EMAIL or DEV_TEST_PASSWORD must not be set when DEV_MODE is false")
 	}
 
 	cfg := &Config{
