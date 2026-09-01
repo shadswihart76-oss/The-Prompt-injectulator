@@ -6,7 +6,6 @@ package auth
 import (
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -30,19 +29,15 @@ type Claims struct {
 // IsAdmin returns true when the role is admin.
 func (c *Claims) IsAdmin() bool { return c.Role == RoleAdmin }
 
-// jwtSecret is loaded once from the environment at startup.
-var jwtSecret = func() []byte {
-	s := os.Getenv("JWT_SECRET")
-	if s == "" {
-		// This default is only acceptable in dev mode; production startup
-		// validation (see config.go) will refuse to run without a proper secret.
-		s = "dev-only-insecure-secret-change-in-production"
-	}
-	return []byte(s)
-}()
+// TokenService handles JWT signing and parsing with an injected secret.
+// All callers must obtain a TokenService from Config.TokenService() to ensure
+// the secret has been validated at configuration load time.
+type TokenService struct {
+	secret []byte
+}
 
 // IssueToken creates a signed JWT for the given email and role.
-func IssueToken(email, role string, ttl time.Duration) (string, error) {
+func (ts *TokenService) IssueToken(email, role string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		Email: email,
@@ -53,16 +48,16 @@ func IssueToken(email, role string, ttl time.Duration) (string, error) {
 		},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return tok.SignedString(jwtSecret)
+	return tok.SignedString(ts.secret)
 }
 
 // ParseToken validates and parses a JWT string.
-func ParseToken(tokenStr string) (*Claims, error) {
+func (ts *TokenService) ParseToken(tokenStr string) (*Claims, error) {
 	tok, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")
 		}
-		return jwtSecret, nil
+		return ts.secret, nil
 	})
 	if err != nil {
 		return nil, err
@@ -75,12 +70,12 @@ func ParseToken(tokenStr string) (*Claims, error) {
 }
 
 // FromRequest extracts and validates the JWT from an HTTP request.
-func FromRequest(r *http.Request) (*Claims, error) {
+func (ts *TokenService) FromRequest(r *http.Request) (*Claims, error) {
 	h := r.Header.Get("Authorization")
 	if !strings.HasPrefix(h, "Bearer ") {
 		return nil, errors.New("missing or malformed Authorization header")
 	}
-	return ParseToken(strings.TrimPrefix(h, "Bearer "))
+	return ts.ParseToken(strings.TrimPrefix(h, "Bearer "))
 }
 
 // HashPassword bcrypt-hashes a plaintext password.

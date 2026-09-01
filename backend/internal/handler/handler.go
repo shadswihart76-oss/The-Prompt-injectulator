@@ -3,6 +3,8 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,11 +15,36 @@ import (
 	"github.com/shadswihart76-oss/the-prompt-injectulator/internal/usage"
 )
 
+// maxRequestBodyBytes is the largest request body the server will read.
+// Protects against large-body DoS before JSON decoding.
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
 // Server holds shared dependencies for all handlers.
 type Server struct {
 	Cfg     *auth.Config
 	Store   *auth.Store
 	Tracker *usage.Tracker
+}
+
+// -----------------------------------------------------------------------
+// Middleware helpers
+// -----------------------------------------------------------------------
+
+// setSecurityHeaders applies a conservative set of security headers suitable
+// for this simple same-origin SPA.
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+}
+
+// setAuthResponseHeaders adds headers appropriate for token-bearing / auth responses.
+func setAuthResponseHeaders(w http.ResponseWriter) {
+	setSecurityHeaders(w)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 }
 
 // -----------------------------------------------------------------------
@@ -35,9 +62,49 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func decodeJSON(r *http.Request, dst any) error {
-	d := json.NewDecoder(r.Body)
+	limited := io.LimitReader(r.Body, maxRequestBodyBytes)
+	d := json.NewDecoder(limited)
 	d.DisallowUnknownFields()
-	return d.Decode(dst)
+	if err := d.Decode(dst); err != nil {
+		return err
+	}
+	// Reject trailing garbage after the JSON value.
+	if _, err := d.Token(); err != io.EOF {
+		return errors.New("unexpected data after JSON value")
+	}
+	return nil
+}
+
+// requireAdmin parses the JWT from r, re-validates the caller's admin status
+// against the server-side config, and returns the claims on success.
+// Returns (nil, false) and writes the appropriate HTTP error on failure.
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (*auth.Claims, bool) {
+	claims, err := s.Cfg.Tokens.FromRequest(r)
+	if err != nil {
+		// Return a generic message; do not expose raw JWT parsing errors.
+		setSecurityHeaders(w)
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return nil, false
+	}
+	// Authorization re-derived from server-side config on every request.
+	if !s.Cfg.IsAdmin(claims.Email) {
+		setSecurityHeaders(w)
+		writeError(w, http.StatusForbidden, "admin access required")
+		return nil, false
+	}
+	return claims, true
+}
+
+// requireAuth parses the JWT from r and returns the claims on success.
+// Returns (nil, false) and writes the appropriate HTTP error on failure.
+func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) (*auth.Claims, bool) {
+	claims, err := s.Cfg.Tokens.FromRequest(r)
+	if err != nil {
+		setSecurityHeaders(w)
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return nil, false
+	}
+	return claims, true
 }
 
 // -----------------------------------------------------------------------
@@ -51,9 +118,10 @@ type registerRequest struct {
 
 // Register creates a new user account.
 func (s *Server) Register(w http.ResponseWriter, r *http.Request) {
+	setAuthResponseHeaders(w)
 	var req registerRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Email == "" || req.Password == "" {
@@ -82,7 +150,7 @@ func (s *Server) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, err := auth.IssueToken(req.Email, role, 24*time.Hour)
+	tok, err := s.Cfg.Tokens.IssueToken(req.Email, role, 24*time.Hour)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not issue token")
 		return
@@ -105,9 +173,10 @@ type loginRequest struct {
 
 // Login authenticates an existing user.
 func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
+	setAuthResponseHeaders(w)
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -120,7 +189,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		// Ensure the dev account is in the store so other lookups work.
 		_ = s.Store.Register(s.Cfg.DevTestEmail, s.Cfg.DevTestPasswordHash, auth.RoleAdmin)
-		tok, err := auth.IssueToken(s.Cfg.DevTestEmail, auth.RoleAdmin, 24*time.Hour)
+		tok, err := s.Cfg.Tokens.IssueToken(s.Cfg.DevTestEmail, auth.RoleAdmin, 24*time.Hour)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not issue token")
 			return
@@ -150,7 +219,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		role = auth.RoleAdmin
 	}
 
-	tok, err := auth.IssueToken(u.Email, role, 24*time.Hour)
+	tok, err := s.Cfg.Tokens.IssueToken(u.Email, role, 24*time.Hour)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not issue token")
 		return
@@ -174,18 +243,19 @@ type completeRequest struct {
 
 // Complete sends a prompt to the requested LLM provider and returns the response.
 // Authorization is enforced on the server side:
-//   - Only admin users may select the mock provider.
+//   - Only server-authorized admin users (from config, not JWT claim) may select the mock provider.
+//   - Cloud providers are only available when CLOUD_API_ENABLED=true.
 //   - All users are subject to per-user token budget limits.
 func (s *Server) Complete(w http.ResponseWriter, r *http.Request) {
-	claims, err := auth.FromRequest(r)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "authentication required: "+err.Error())
+	setSecurityHeaders(w)
+	claims, ok := s.requireAuth(w, r)
+	if !ok {
 		return
 	}
 
 	var req completeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Prompt == "" {
@@ -193,25 +263,40 @@ func (s *Server) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate max_tokens before any usage estimation.
+	if err := usage.ValidateMaxTokens(req.MaxTokens); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// ------------------------------------------------------------------
-	// Authorisation: mock provider is restricted to admin users.
-	// This check happens server-side on every request; it cannot be
-	// bypassed by modifying the JWT payload, localStorage, or any
-	// client-supplied parameter.
+	// Authorization: server-side policy, re-derived from config each request.
+	// A valid JWT with role=admin for an email absent from ADMIN_EMAILS is denied.
 	// ------------------------------------------------------------------
-	if req.Provider == llm.ProviderMock && !claims.IsAdmin() {
+	isAdmin := s.Cfg.IsAdmin(claims.Email)
+
+	if req.Provider == llm.ProviderMock && !isAdmin {
 		writeError(w, http.StatusForbidden, "mock provider is available to admin users only")
 		return
 	}
 
-	// Default to mock for admin, real for users (when configured).
+	// Default provider selection.
 	provider := req.Provider
 	if provider == "" {
-		if claims.IsAdmin() {
+		if isAdmin {
 			provider = llm.ProviderMock
 		} else {
 			provider = llm.ProviderOpenAI
 		}
+	}
+
+	// Cloud provider gate: must be explicitly enabled server-side.
+	if provider == llm.ProviderOpenAI && !s.Cfg.CloudAPIEnabled {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "cloud provider is disabled; set CLOUD_API_ENABLED=true to enable paid API access",
+			"code":  "cloud_disabled",
+		})
+		return
 	}
 
 	var p llm.Provider
@@ -225,15 +310,12 @@ func (s *Server) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Estimate cost before making the call.
-	estimatedTokens := len(req.Prompt)/4 + req.MaxTokens + 50
-	if estimatedTokens <= 0 {
-		estimatedTokens = 100
-	}
+	// Estimate cost and reserve atomically before making the call.
+	estimatedTokens := usage.EstimateTokens(len(req.Prompt), req.MaxTokens)
 
 	// Skip budget checks for mock provider (zero cost).
 	if provider != llm.ProviderMock {
-		if err := s.Tracker.Check(claims.Email, estimatedTokens); err != nil {
+		if err := s.Tracker.Reserve(claims.Email, estimatedTokens); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, map[string]any{
 				"error":      err.Error(),
 				"limit_info": usageInfo(s.Tracker, claims.Email),
@@ -247,13 +329,17 @@ func (s *Server) Complete(w http.ResponseWriter, r *http.Request) {
 		MaxTokens: req.MaxTokens,
 	})
 	if err != nil {
+		// Release the reservation; provider call failed, no tokens consumed.
+		if provider != llm.ProviderMock {
+			s.Tracker.Release(claims.Email, estimatedTokens)
+		}
 		writeError(w, http.StatusBadGateway, "provider error: "+err.Error())
 		return
 	}
 
-	// Record actual token usage (real providers only).
+	// Commit actual token usage (real providers only).
 	if provider != llm.ProviderMock {
-		s.Tracker.Record(claims.Email, resp.TokensUsed)
+		s.Tracker.Commit(claims.Email, estimatedTokens, resp.TokensUsed)
 	}
 
 	used, limit := s.Tracker.Status(claims.Email)
@@ -274,22 +360,20 @@ func (s *Server) Complete(w http.ResponseWriter, r *http.Request) {
 // -----------------------------------------------------------------------
 
 // AdminStatus returns configuration and usage info for the admin user.
+// Role is derived from server-side config, not the JWT claim.
 func (s *Server) AdminStatus(w http.ResponseWriter, r *http.Request) {
-	claims, err := auth.FromRequest(r)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "authentication required: "+err.Error())
-		return
-	}
-	if !claims.IsAdmin() {
-		writeError(w, http.StatusForbidden, "admin access required")
+	setSecurityHeaders(w)
+	claims, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	used, limit := s.Tracker.Status(claims.Email)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dev_mode":     s.Cfg.DevMode,
 		"email":        claims.Email,
-		"role":         claims.Role,
+		"role":         auth.RoleAdmin, // role is server-derived, not from JWT claim
 		"mock_enabled": true,
+		"cloud_enabled": s.Cfg.CloudAPIEnabled,
 		"usage":        map[string]any{"used": used, "limit": limit},
 	})
 }
@@ -300,9 +384,9 @@ func (s *Server) AdminStatus(w http.ResponseWriter, r *http.Request) {
 
 // UsageStatus returns the calling user's current token budget status.
 func (s *Server) UsageStatus(w http.ResponseWriter, r *http.Request) {
-	claims, err := auth.FromRequest(r)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "authentication required")
+	setSecurityHeaders(w)
+	claims, ok := s.requireAuth(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, usageInfo(s.Tracker, claims.Email))
@@ -318,18 +402,15 @@ type resetUsageRequest struct {
 
 // ResetUsage clears the token budget for the specified user (admin only).
 func (s *Server) ResetUsage(w http.ResponseWriter, r *http.Request) {
-	claims, err := auth.FromRequest(r)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "authentication required: "+err.Error())
+	setSecurityHeaders(w)
+	claims, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
-	if !claims.IsAdmin() {
-		writeError(w, http.StatusForbidden, "admin access required")
-		return
-	}
+	_ = claims // identity verified; not needed further
 	var req resetUsageRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Email == "" {
