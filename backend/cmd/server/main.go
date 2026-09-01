@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -18,8 +17,7 @@ func main() {
 
 	if cfg.DevMode {
 		log.Println("⚠️  DEV_MODE is ON – test account active, mock provider available. Do NOT use in production.")
-		fmt.Printf("    Dev test email:    %s\n", cfg.DevTestEmail)
-		fmt.Println("    Dev test password: (set via DEV_TEST_PASSWORD, default: changeme)")
+		log.Printf("    Dev test email: %s", cfg.DevTestEmail)
 	}
 
 	store := auth.NewStore()
@@ -47,7 +45,7 @@ func main() {
 	} else {
 		mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"name":"Prompt Injectulator","status":"running"}`)
+			w.Write([]byte(`{"name":"Prompt Injectulator","status":"running"}`)) //nolint:errcheck
 		})
 	}
 

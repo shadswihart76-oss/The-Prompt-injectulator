@@ -15,7 +15,11 @@ cd The-Prompt-injectulator
 
 # 2. Configure dev environment
 cp .env.example .env
-# .env already has DEV_MODE=true and default test credentials – edit if desired
+# Edit .env and fill in the required values:
+#   JWT_SECRET   – generate with: openssl rand -base64 48
+#   DEV_TEST_EMAIL    – e.g. you@localhost
+#   DEV_TEST_PASSWORD – choose a unique local password (min 8 chars)
+#   DEV_MODE=true
 
 # 3. Build the frontend
 cd frontend && npm install && npm run build && cd ..
@@ -26,7 +30,7 @@ export $(grep -v '^#' ../.env | xargs)
 go run ./cmd/server
 
 # 5. Open http://localhost:8080 in your browser
-#    Login with: admin@localhost / changeme  (or whatever you set in .env)
+#    Login with the credentials you set in DEV_TEST_EMAIL / DEV_TEST_PASSWORD
 ```
 
 The mock provider runs entirely locally with no external API calls or costs.
@@ -60,8 +64,8 @@ The mock provider runs entirely locally with no external API calls or costs.
 
 - Admin status is determined **entirely server-side** from `ADMIN_EMAILS` in the environment.
 - Clients cannot self-elevate by modifying JWTs, localStorage, or request parameters.
-- The JWT role claim is set at login from the server config; the mock-provider check re-reads the claim on every request.
-- In **dev mode** (`DEV_MODE=true`), a bootstrap admin account (`DEV_TEST_EMAIL`) is created automatically so you can test without a real API key.
+- The JWT role claim is set at login from the server config; **every** protected endpoint re-reads `IsAdmin()` from server config on each request — the JWT role claim is never the sole authorization source.
+- In **dev mode** (`DEV_MODE=true`), a bootstrap admin account (`DEV_TEST_EMAIL`) is created so you can test without a real API key. Both `DEV_TEST_EMAIL` and `DEV_TEST_PASSWORD` must be explicitly supplied; no defaults are provided.
 
 ### Admin capabilities
 
@@ -119,12 +123,13 @@ See `.env.example` for all variables. Key ones:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `JWT_SECRET` | *(required, all modes)* | HMAC-SHA256 signing key (min 32 chars) |
 | `DEV_MODE` | `false` | Enable dev/test mode. **Never true in production.** |
-| `DEV_TEST_EMAIL` | `admin@localhost` | Dev-only bootstrap admin email |
-| `DEV_TEST_PASSWORD` | `changeme` | Dev-only bootstrap admin password |
-| `JWT_SECRET` | *(required in prod)* | HMAC-SHA256 signing key |
-| `ADMIN_EMAILS` | *(required in prod)* | Comma-separated admin email allowlist |
-| `OPENAI_API_KEY` | *(optional)* | OpenAI API key for real completions |
+| `DEV_TEST_EMAIL` | *(required when DEV_MODE=true)* | Dev-only bootstrap admin email |
+| `DEV_TEST_PASSWORD` | *(required when DEV_MODE=true)* | Dev-only bootstrap admin password (min 8 chars, no common placeholders) |
+| `ADMIN_EMAILS` | *(required in production)* | Comma-separated admin email allowlist |
+| `CLOUD_API_ENABLED` | `false` | Enable paid cloud provider (e.g. OpenAI). Must be `true` to allow cloud requests. |
+| `OPENAI_API_KEY` | *(optional)* | OpenAI API key (only used when CLOUD_API_ENABLED=true) |
 | `USER_TOKEN_LIMIT` | `10000` | Per-user token budget |
 | `PORT` | `8080` | HTTP listen port |
 
@@ -148,25 +153,32 @@ cd frontend && npm run build
 
 | | Dev Mode (`DEV_MODE=true`) | Production (`DEV_MODE=false`) |
 |---|---|---|
-| Bootstrap admin account | ✅ auto-created from env vars | ❌ not created |
-| JWT_SECRET required | No (insecure default used) | **Yes – server refuses to start without it** |
+| Bootstrap admin account | ✅ created from DEV_TEST_EMAIL/PASSWORD | ❌ not created |
+| JWT_SECRET required | **Yes – required in all modes** | **Yes – required in all modes** |
 | ADMIN_EMAILS required | No (dev account auto-added) | **Yes – server refuses to start without it** |
-| External API calls | None (mock only) | Only when provider=openai and key is set |
+| DEV_TEST_EMAIL/PASSWORD | Required (no defaults; rejects common placeholders) | Must not be set |
+| Cloud API calls | Only when CLOUD_API_ENABLED=true | Only when CLOUD_API_ENABLED=true |
 | Suitable for internet exposure | **No** | Yes (with proper secrets) |
 
 ### Key Design Decisions
 
-1. **Server-side role enforcement.** The `mock` provider check happens inside the HTTP handler after JWT validation. No client-side gate exists alone; authorization is always re-validated per-request.
+1. **Server-side role enforcement.** Every protected endpoint re-derives admin status from `s.Cfg.IsAdmin(claims.Email)` using the server-side config on each request. A valid JWT containing `role=admin` for an email absent from `ADMIN_EMAILS` is denied. A stale `role=user` token for an allowlisted email is granted admin access. The JWT role claim is never the sole authorization source.
 
-2. **No hard-coded production credentials.** Production mode fails closed: if `JWT_SECRET` or `ADMIN_EMAILS` are absent, the process exits at startup rather than running in an insecure state.
+2. **No hard-coded production credentials, no fallback defaults.** `JWT_SECRET` is required in all modes (min 32 chars). `DEV_TEST_EMAIL` and `DEV_TEST_PASSWORD` must be explicitly supplied when `DEV_MODE=true`; no defaults are provided. Common placeholder passwords (such as `changeme`) are rejected at startup. In production, dev-mode variables must not be set.
 
-3. **Dev mode is explicit and visible.** `DEV_MODE=true` must be set intentionally. The server logs a prominent warning and exposes the dev account email on startup.
+3. **Dev mode is explicit and visible.** `DEV_MODE=true` must be set intentionally. The server logs a prominent warning and the dev account email on startup (password is never logged).
 
-4. **In-memory user store.** The current implementation uses an in-memory store (suitable for testing). For production, replace `auth.Store` with a persistent database and use environment-injected credentials for the DB connection.
+4. **Cloud provider disabled by default.** All cloud (paid) provider requests are rejected unless `CLOUD_API_ENABLED=true` is explicitly set. The response includes a machine-readable `"code": "cloud_disabled"` field. No automatic fallback between providers occurs.
 
-5. **Password hashing.** Passwords are hashed with bcrypt (`golang.org/x/crypto/bcrypt`). Plaintext passwords are never stored or logged.
+5. **Atomic quota enforcement.** The tracker uses a reserve/commit/release model: quota is reserved atomically before a paid call, committed to actual usage on success, and released without charge on provider failure. Exact-limit requests are permitted; over-limit requests are denied.
 
-6. **Token budget guardrails.** API usage is tracked per user in memory. Limits prevent runaway spend if a user account is compromised. Admins can reset budgets.
+6. **In-memory user store.** The current implementation uses an in-memory store (suitable for single-instance development and testing). For production multi-instance deployment, replace `auth.Store` and `usage.Tracker` with a persistent, distributed store.
+
+7. **Password hashing.** Passwords are hashed with bcrypt (`golang.org/x/crypto/bcrypt`). Plaintext passwords are never stored or logged.
+
+8. **Security headers.** All API responses include `X-Content-Type-Options: nosniff`, `X-Frame-Options`, and a conservative `Content-Security-Policy`. Auth/login endpoints additionally set `Cache-Control: no-store`.
+
+9. **Request hardening.** Request bodies are limited to 1 MiB before JSON decoding. Trailing garbage after valid JSON is rejected. Authentication failure responses return generic messages without exposing JWT parsing details.
 
 ### Out of Scope / Future Work
 
