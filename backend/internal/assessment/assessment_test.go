@@ -119,9 +119,8 @@ func TestDeterministicGenerator(t *testing.T) {
 	t.Run("normalizes objective whitespace", func(t *testing.T) {
 		r := Request{Objective: "  test   the  system  ", Surface: "chat", RiskFocus: "data-exposure"}
 		a, _ := g.Generate(r)
-		if a.NormalizedObjective != "Test   the  system" {
-			// Fields() collapses ALL whitespace
-			t.Logf("normalized: %q", a.NormalizedObjective)
+		if a.NormalizedObjective != "Test the system" {
+			t.Errorf("expected 'Test the system', got %q", a.NormalizedObjective)
 		}
 	})
 

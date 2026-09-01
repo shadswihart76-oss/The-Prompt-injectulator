@@ -3,14 +3,16 @@ package assessment
 import (
 	"errors"
 	"strings"
+	"unicode/utf8"
 )
 
 // Validate checks that r has the required fields and valid enum values.
 func Validate(r Request) error {
-	if strings.TrimSpace(r.Objective) == "" {
+	trimmed := strings.TrimSpace(r.Objective)
+	if trimmed == "" {
 		return errors.New("objective is required")
 	}
-	if len(strings.TrimSpace(r.Objective)) < 10 {
+	if utf8.RuneCountInString(trimmed) < 10 {
 		return errors.New("objective must be at least 10 characters")
 	}
 
