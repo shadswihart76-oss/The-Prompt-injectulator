@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify baseline repository files
+        run: |
+          test -s README.md
+          test -s LICENSE
+          test -s CONTRIBUTING.md
+
+      - name: Run README structure smoke test
+        run: bash tests/readme_sections_test.sh
