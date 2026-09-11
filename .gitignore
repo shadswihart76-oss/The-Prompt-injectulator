@@ -27,3 +27,4 @@ Thumbs.db
 *.swp
 *.log
 npm-debug.log*
+tsbuildinfo

@@ -42,17 +42,23 @@ The mock provider runs entirely locally with no external API calls or costs.
 ```
 .
 ├── backend/                    # Go HTTP API server
-│   ├── cmd/server/main.go      # Entry point & routing
+│   ├── cmd/server/main.go      # Entry point & routing (serves built SPA from backend/static/)
 │   └── internal/
+│       ├── assessment/         # Deterministic assessment generator + validation
 │       ├── auth/               # JWT auth, config, user store
 │       ├── llm/                # Provider interface, mock & OpenAI providers
 │       ├── usage/              # Per-user token budget tracker
-│       └── handler/            # HTTP request handlers
-├── frontend/                   # React + TypeScript (Vite)
+│       └── handler/            # HTTP request handlers (auth, assessments, admin)
+├── frontend/                   # React + TypeScript (Vite, dark workbench UI)
 │   └── src/
-│       ├── App.tsx             # Main UI (login, prompt, admin panel)
-│       └── api/api.ts          # Typed API client
+│       ├── App.tsx             # Layout, login, admin panel, routing
+│       ├── Composer.tsx        # Objective → assessment prompt composer
+│       ├── AssessmentView.tsx  # Scenario cards, findings map
+│       ├── types.ts            # Shared TypeScript types
+│       ├── api/api.ts          # Typed API client
+│       └── App.css             # Design system (dark theme)
 ├── .env.example                # Environment variable template
+├── .github/workflows/ci.yml    # CI: hygiene + Go tests + frontend build
 └── README.md
 ```
 
@@ -85,14 +91,28 @@ All requests that require authentication must include:
 Authorization: ******
 ```
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
 | POST | `/api/auth/register` | None | Register a new user |
 | POST | `/api/auth/login` | None | Login and receive a JWT |
+| POST | `/api/assessments` | User | Generate a structured prompt-injection assessment (the core workbench feature) |
 | POST | `/api/llm/complete` | User | Submit a prompt to an LLM provider |
 | GET  | `/api/usage` | User | View your token budget status |
 | GET  | `/api/admin/status` | Admin | Admin dashboard |
 | POST | `/api/admin/reset-usage` | Admin | Reset a user's token budget |
+
+### POST `/api/assessments`
+
+```json
+{
+  "objective": "Test whether a RAG pipeline treats retrieved content as data, not commands.",
+  "surface": "rag",
+  "riskFocus": "instruction-override",
+  "environment": "staging"
+}
+```
+
+Valid values: `surface` = `chat` | `rag` | `agent`; `riskFocus` = `instruction-override` | `data-exposure` | `unsafe-tool-actions` | `cross-tenant-isolation`.
+
+Returns a normalized objective, threat-model summary, direct/indirect test scenarios with canary-token fixtures, and a vulnerability/finding map aligned to the OWASP LLM Top 10. Generation is deterministic and local — no external API calls and no token budget consumed.
 
 ### POST `/api/llm/complete`
 

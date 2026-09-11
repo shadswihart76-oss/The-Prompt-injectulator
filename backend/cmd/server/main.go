@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/shadswihart76-oss/the-prompt-injectulator/internal/assessment"
 	"github.com/shadswihart76-oss/the-prompt-injectulator/internal/auth"
 	"github.com/shadswihart76-oss/the-prompt-injectulator/internal/handler"
 )
@@ -39,9 +40,18 @@ func main() {
 	mux.HandleFunc("GET /api/admin/status", srv.AdminStatus)
 	mux.HandleFunc("POST /api/admin/reset-usage", srv.ResetUsage)
 
+	// Assessment generation (authenticated) – the core workbench feature.
+	gen := assessment.NewDeterministicGenerator()
+	mux.HandleFunc("POST /api/assessments", srv.Assess(gen))
+
 	// Serve static frontend files if present.
 	if _, err := os.Stat("./static"); err == nil {
-		mux.Handle("/", http.FileServer(http.Dir("./static")))
+		// Wrap the static file server with the same security headers the API sets.
+		staticFS := http.FileServer(http.Dir("./static"))
+		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler.SetSecurityHeaders(w)
+			staticFS.ServeHTTP(w, r)
+		}))
 	} else {
 		mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")

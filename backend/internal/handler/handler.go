@@ -30,6 +30,11 @@ type Server struct {
 // Middleware helpers
 // -----------------------------------------------------------------------
 
+// SetSecurityHeaders applies a conservative set of security headers suitable
+// for this simple same-origin SPA. Exported so other packages (e.g. the
+// static file server wrapper in cmd/server) can reuse it.
+func SetSecurityHeaders(w http.ResponseWriter) { setSecurityHeaders(w) }
+
 // setSecurityHeaders applies a conservative set of security headers suitable
 // for this simple same-origin SPA.
 func setSecurityHeaders(w http.ResponseWriter) {
