@@ -6,13 +6,13 @@ README="README.md"
 [ -f "$README" ]
 
 required_sections=(
-  "## Purpose"
-  "## Features"
-  "## Setup"
-  "## Usage"
-  "## Examples"
-  "## Limitations"
-  "## Maintenance Notes"
+  "## Quick Start"
+  "## Architecture"
+  "## API Reference"
+  "## Environment Variables"
+  "## Running Tests"
+  "## Threat Model & Security Notes"
+  "## License"
 )
 
 for section in "${required_sections[@]}"; do
