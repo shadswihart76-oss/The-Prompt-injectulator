@@ -1,19 +1,21 @@
 # Node / frontend
 node_modules/
 dist/
-.env
-.env.local
-.env.*.local
-*.log
-npm-debug.log*
+frontend/dist/
 .vite/
 
 # Go / backend
 backend/bin/
-*.exe
+backend/static/
+vendor/
 *.test
 *.out
-vendor/
+*.exe
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
 
 # OS
 .DS_Store
@@ -23,3 +25,5 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+*.log
+npm-debug.log*

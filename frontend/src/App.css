@@ -228,3 +228,87 @@ body { background: var(--bg-base); color: var(--text-primary); font-family: var(
   .composer-row { flex-direction: column; }
   .detail-grid { grid-template-columns: 1fr; }
 }
+
+/* ===== Login ===== */
+.login-layout {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(1200px 600px at 20% -10%, rgba(79,142,247,.15), transparent 60%),
+    radial-gradient(800px 500px at 110% 110%, rgba(79,142,247,.08), transparent 60%),
+    var(--bg-base);
+  padding: 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 32px;
+  box-shadow: var(--shadow);
+}
+
+.login-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.login-sub { color: var(--text-secondary); font-size: 13px; margin: 8px 0 20px; }
+.login-btn { width: 100%; margin-top: 8px; }
+.login-notice {
+  margin-top: 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* ===== Inputs (shared) ===== */
+.composer-input {
+  width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  padding: 9px 12px;
+  font-size: 13px;
+  font-family: var(--font);
+}
+.composer-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ===== Admin ===== */
+.admin-view { max-width: 720px; }
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.admin-title { font-size: 20px; font-weight: 700; color: var(--text-primary); }
+.admin-reset-row { display: flex; gap: 8px; margin-top: 10px; }
+.admin-reset-input {
+  flex: 1;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  padding: 9px 12px;
+  font-size: 13px;
+}
+.admin-reset-input:focus { outline: none; border-color: var(--accent); }
+.sidebar-admin-btn { background: var(--bg-raised); color: var(--text-primary); }
+.sidebar-admin-btn:hover { background: var(--bg-hover); }
+.sidebar-admin-btn span { font-size: 15px; }
+.sidebar-link {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+.sidebar-link:hover { color: var(--accent-hover); }
+.success-msg { color: var(--success); font-size: 13px; margin-top: 8px; }
